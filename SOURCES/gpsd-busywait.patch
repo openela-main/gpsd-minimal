@@ -1,0 +1,84 @@
+commit e5ba7aa2af74fd22ebbd5c4a6624edcf983863de
+Author: Michal Schmidt <mschmidt@redhat.com>
+Date:   Fri Aug 4 16:53:01 2023 +0200
+
+    gps/gps.py.in: no busy-waiting when reading from gpsd socket
+    
+    ubxtool keeps one CPU 100% busy while it waits for data to read from the
+    gpsd socket. Running it under strace showed that it calls select() with
+    zero timeout in a loop:
+    
+    ...
+    11:02:34.049629 pselect6(4, [3], [], [], {tv_sec=0, tv_nsec=0}, NULL) = 0 (Timeout)
+    11:02:34.049649 pselect6(4, [3], [], [], {tv_sec=0, tv_nsec=0}, NULL) = 0 (Timeout)
+    11:02:34.049670 pselect6(4, [3], [], [], {tv_sec=0, tv_nsec=0}, NULL) = 0 (Timeout)
+    ...
+    
+    The busy waiting can be eliminated by passing the actual timeout value
+    to select(). In the reading loop in gps.py, the remaining time can be
+    easily calculated and passed as the argument to the self.ser.waiting()
+    function (which is basically a select() wrapper).
+    
+    Fixing this problem exposed a bug in how the received bytes are decoded.
+    decode_func may not consume all input at once. Consumable input may be
+    left in self.out until decode_func returns zero, indicating that it
+    could not process any more input. So decode_func must be called in a
+    loop each time a buffer is received from the socket. The busy waiting
+    was hiding this issue, because decode_func was being called all the
+    time.
+    
+    The "elif self.input_is_device:" branch probably needs similar
+    treatment, but I am testing only the gpsd usecase.
+
+diff --git a/gps/gps.py.in b/gps/gps.py.in
+index 623a750a0..14d7707ab 100644
+--- a/gps/gps.py.in
++++ b/gps/gps.py.in
+@@ -384,10 +384,11 @@ class gps_io(object):
+             if self.gpsd_host is not None:
+                 # gpsd input
+                 start = monotonic()
+-                while (monotonic() - start) < input_wait:
++                remaining_time = input_wait
++                while remaining_time > 0:
+                     # First priority is to be sure the input buffer is read.
+                     # This is to prevent input buffer overuns
+-                    if 0 < self.ser.waiting():
++                    if 0 < self.ser.waiting(remaining_time):
+                         # We have serial input waiting, get it
+                         # No timeout possible
+                         # RTCM3 JSON can be over 4.4k long, so go big
+@@ -397,17 +398,22 @@ class gps_io(object):
+                             raw_fd.write(polybytes(new_out))
+                         self.out += new_out
+ 
+-                    consumed = decode_func(self.out)
+-                    # TODO: the decoder shall return a some current
+-                    # statement_identifier # to fill last_statement_identifier
+-                    last_statement_identifier = None
+-                    #
+-                    self.out = self.out[consumed:]
+-                    if ((expect_statement_identifier and
+-                         (expect_statement_identifier ==
+-                          last_statement_identifier))):
+-                        # Got what we were waiting for.  Done?
+-                        ret_code = 0
++                    while True:
++                        consumed = decode_func(self.out)
++                        if consumed == 0:
++                            break
++                        # TODO: the decoder shall return a some current
++                        # statement_identifier # to fill last_statement_identifier
++                        last_statement_identifier = None
++                        #
++                        self.out = self.out[consumed:]
++                        if ((expect_statement_identifier and
++                             (expect_statement_identifier ==
++                              last_statement_identifier))):
++                            # Got what we were waiting for.  Done?
++                            ret_code = 0
++
++                    remaining_time = start + input_wait - monotonic()
+ 
+             elif self.input_is_device:
+                 # input is a serial device
