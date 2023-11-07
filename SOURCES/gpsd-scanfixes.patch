@@ -1,0 +1,188 @@
+commit 651d505d2b075b9bd87729d2d5d155c29c03fbc1
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Jul 31 15:46:16 2023 +0200
+
+    devtools/tablegen.py: Fix typo in structname.
+
+diff --git a/devtools/tablegen.py b/devtools/tablegen.py
+index 7851fceca..3feb64b9e 100755
+--- a/devtools/tablegen.py
++++ b/devtools/tablegen.py
+@@ -129,7 +129,7 @@ def make_driver_code(wfp):
+                 continue
+             offset = offsets[i].split('-')[0]
+             if arrayname:
+-                target = "%s.%s[i].%s" % (structnme, arrayname, name)
++                target = "%s.%s[i].%s" % (structname, arrayname, name)
+                 offset = "a + " + offset
+             else:
+                 target = "%s.%s" % (structname, name)
+
+commit db2a00f7ee4e66ee57ff66e84cec664444c26d8f
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Jul 31 15:47:10 2023 +0200
+
+    gpsd/net_dgpsip.c: Fix socket check.
+
+diff --git a/gpsd/net_dgpsip.c b/gpsd/net_dgpsip.c
+index d6e123b67..8e218ba41 100644
+--- a/gpsd/net_dgpsip.c
++++ b/gpsd/net_dgpsip.c
+@@ -42,7 +42,7 @@ socket_t dgpsip_open(struct gps_device_t *device, const char *dgpsserver)
+     }
+ 
+     dsock = netlib_connectsock(AF_UNSPEC, dgpsserver, dgpsport, "tcp");
+-    if (0 <= dsock) {
++    if (0 > dsock) {
+         GPSD_LOG(LOG_ERROR, &device->context->errout,
+                  "DGPS: can't connect to DGPS server %s, netlib error %s(%d).\n",
+                  dgpsserver, netlib_errstr(dsock), dsock);
+
+commit 60bc3595dbb74f8904037ad64b2a0820c408996b
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Jul 31 15:50:32 2023 +0200
+
+    clients/gpsdebuginfo: Fix issues reported by shellcheck.
+
+diff --git a/clients/gpsdebuginfo b/clients/gpsdebuginfo
+index fa970dad9..38a1540b2 100755
+--- a/clients/gpsdebuginfo
++++ b/clients/gpsdebuginfo
+@@ -7,7 +7,7 @@ exec 2>&1
+ 
+ # print what we do
+ set -x
+-if [ 0 != $(id -u) ]; then
++if [ 0 != "$(id -u)" ]; then
+     echo "Please run as root"
+     exit 1
+ fi
+@@ -63,9 +63,9 @@ ls -l /dev/pps* /dev/tty[ASTU]* /dev/gps*
+ if command -v lsusb; then
+     lsusb
+ fi
+-echo PYTHONPATH $PYTHONPATH
++echo PYTHONPATH "$PYTHONPATH"
+ if command -v gpscat; then
+-    head -n 1 `command -v gpscat`
++    head -n 1 "$(command -v gpscat)"
+ fi
+ if command -v python; then
+     python -V
+
+commit e12265d591f07a50d6de54af83ae6246326460ef
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Jul 31 15:50:58 2023 +0200
+
+    gpsinit: Fix issues reported by shellcheck.
+
+diff --git a/gpsinit b/gpsinit
+index 5c14f3374..8fc6c92ec 100755
+--- a/gpsinit
++++ b/gpsinit
+@@ -6,26 +6,23 @@
+ # SPDX-License-Identifier: BSD-2-clause
+ #
+ 
+-speed=38400
+ net=0
+ 
+ version()
+ {
+-    echo `basename $0`" : Version v0.21";
++    echo "$(basename "$0") : Version v0.21";
+ }
+ 
+ usage()
+ {
+     version; echo;
+-    echo "usage :" `basename $0` "[-n <netnumber>] [-s <serial speed>] <can_module_name> [<interface_name>]";
+-    echo "      :" `basename $0` "-V";
+-    echo "      :" `basename $0` "-h";
++    echo "usage : $(basename "$0") [-n <netnumber>] <can_module_name> [<interface_name>]";
++    echo "      : $(basename "$0") -V";
++    echo "      : $(basename "$0") -h";
+     echo "  Options include:";
+     echo "  -?              = Print this help message and exit.";
+     echo "  -h              = Print this help message and exit.";
+     echo "  -n              = CAN network number, 0 if not given.";
+-    echo "  -s              = Speed of the slcan hardware port, 38400 if not given.";
+-    echo "                  = Needed for some slcan modules only.";
+     echo "  -V              = Print version of this script and exit.";
+     echo "  can_module_name = One out of plx_pci, esd_usb2, usb_8dev, vcan, slcan, beaglebone.";
+     echo "  interface_name  = The interface, the SLCAN module is connected to, i.e. /dev/ttyS0 or /dev/ttyUSB0.";
+@@ -34,19 +31,19 @@ usage()
+ }
+ 
+ # -v for version is deprecated 2020
+-while getopts :n:s:vh opt
++while getopts :n:s:vVh opt
+ do
+     case ${opt} in
+         h)  usage; exit 0;;
+         n)  net=${OPTARG};;
+-        s)  speed=${OPTARG};;
++        s)  ;; # unused
+         \?) usage; exit 1;;
+         v)  version; exit 0;;
+         V)  version; exit 0;;
+     esac
+ done
+ 
+-shift $((${OPTIND} - 1))
++shift $((OPTIND - 1))
+ 
+ candevice=$1
+ 
+@@ -54,38 +51,38 @@ case ${candevice} in
+ plx_pci)
+     # For the SJA1000 based PCI or PCI-Express CAN interface
+     modprobe plx_pci;
+-    ip link set can${net} type can tq 250 prop-seg 6 phase-seg1 7 phase-seg2 2 sjw 1;
+-    ip link set can${net} up;;
++    ip link set "can${net}" type can tq 250 prop-seg 6 phase-seg1 7 phase-seg2 2 sjw 1;
++    ip link set "can${net}" up;;
+ esd_usb2)
+     # For an esd usb/2 CAN interface
+     modprobe esd_usb2;
+-    ip link set can${net} type can tq 250 prop-seg 6 phase-seg1 7 phase-seg2 2 sjw 1;
+-    ip link set can${net} up;;
++    ip link set "can${net}" type can tq 250 prop-seg 6 phase-seg1 7 phase-seg2 2 sjw 1;
++    ip link set "can${net}" up;;
+ usb_8dev)
+     # For an 8devices usb2can CAN interface
+     modprobe usb_8dev;
+-    ip link set can${net} type can tq 250 prop-seg 6 phase-seg1 7 phase-seg2 2 sjw 1;
+-    ip link set can${net} up;;
++    ip link set "can${net}" type can tq 250 prop-seg 6 phase-seg1 7 phase-seg2 2 sjw 1;
++    ip link set "can${net}" up;;
+ vcan)
+     # With this setup, CAN frames can be injected into vcan0 by a test
+     modprobe vcan;
+     ip link add type vcan;
+-    ip link set vcan${net} up;;
++    ip link set "vcan${net}" up;;
+ slcan)
+     # For a serial line CAN device
+     # No support for devices, that need a setup of the baudrate yet
+     device=${2:-/dev/ttyUSB0};
+     modprobe slcan;
+-    slcan_attach -f -s5 -o ${device};
+-    slcand `basename ${device}`;
+-    ip link set slcan${net} up;;
++    slcan_attach -f -s5 -o "${device}";
++    slcand "$(basename "${device}")";
++    ip link set "slcan${net}" up;;
+ beaglebone)
+     # For CAN interface on a BeagleBone
+     # The d_can driver is part of the kernel
+-    ip link set can${net} type can bitrate 250000 sjw 1;
+-    ip link set can${net} up;;
++    ip link set "can${net}" type can bitrate 250000 sjw 1;
++    ip link set "can${net}" up;;
+ *)
+-    echo `basename ${0}` ": invalid CAN interface ${1} net${net} device ${2:-(none)}"
++    echo "$(basename "$0") : invalid CAN interface ${1} net${net} device ${2:-(none)}"
+     echo;
+     usage;
+     exit 1

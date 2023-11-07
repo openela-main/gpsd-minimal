@@ -1,0 +1,356 @@
+commit 5c080c35fc3d981172a5e4af34d0d92854a5433a
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Jul 25 11:01:14 2023 +0200
+
+    libgps/netlib.c: Rework enabling non-block and make binding configurable.
+    
+    Instead of accepting SOCK_NONBLOCK as flags in netlib_connectsock1()
+    specify if the non-blocking mode should be enabled after or before
+    connect().
+    
+    Also add a boolean parameter to the function to select between connect()
+    and bind() instead of hardcoding it for TCP vs UDP, which will allow
+    connecting to UDP ports in gps2udp.
+
+diff --git a/gpsd/libgpsd_core.c b/gpsd/libgpsd_core.c
+index 47ee5d57e..341e8b80c 100644
+--- a/gpsd/libgpsd_core.c
++++ b/gpsd/libgpsd_core.c
+@@ -561,7 +561,6 @@ int gpsd_open(struct gps_device_t *session)
+         char server[GPS_PATH_MAX], *host, *port, *device;
+         socket_t dsock;
+         char addrbuf[50];    // INET6_ADDRSTRLEN
+-        int sock_opt;
+ 
+         session->sourcetype = SOURCE_TCP;
+         (void)strlcpy(server, session->gpsdata.dev.path + 6, sizeof(server));
+@@ -576,15 +575,9 @@ int gpsd_open(struct gps_device_t *session)
+         GPSD_LOG(LOG_PROG, &session->context->errout,
+                  "CORE: opening TCP feed at %s, port %s.\n", host,
+                  port);
+-#if defined(SOCK_NONBLOCK)
+-        sock_opt = SOCK_NONBLOCK;
+-#else
+-        // macOS has no SOCK_NONBLOCK
+-        sock_opt = 0;
+-#endif
+         // open non-blocking
+         dsock = netlib_connectsock1(AF_UNSPEC, host, port, "tcp",
+-                                    sock_opt, addrbuf, sizeof(addrbuf));
++                                    1, false, addrbuf, sizeof(addrbuf));
+         if (0 > dsock) {
+             GPSD_LOG(LOG_ERROR, &session->context->errout,
+                      "CORE: TCP %s IP %s, open error %s(%d).\n",
+@@ -614,7 +607,8 @@ int gpsd_open(struct gps_device_t *session)
+         GPSD_LOG(LOG_PROG, &session->context->errout,
+                  "CORE: opening UDP feed at %s, port %s.\n", host,
+                  port);
+-        if (0 > (dsock = netlib_connectsock(AF_UNSPEC, host, port, "udp"))) {
++        if (0 > (dsock = netlib_connectsock1(AF_UNSPEC, host, port, "udp",
++                                             0, true, NULL, 0))) {
+             GPSD_LOG(LOG_ERROR, &session->context->errout,
+                      "CORE: UDP device open error %s(%d).\n",
+                      netlib_errstr(dsock), dsock);
+diff --git a/gpsd/net_ntrip.c b/gpsd/net_ntrip.c
+index 8241995ae..d89bdc1f9 100644
+--- a/gpsd/net_ntrip.c
++++ b/gpsd/net_ntrip.c
+@@ -856,7 +856,8 @@ static int ntrip_reconnect(struct gps_device_t *device)
+              device->gpsdata.dev.path);
+     dsock = netlib_connectsock1(AF_UNSPEC, device->ntrip.stream.host,
+                                 device->ntrip.stream.port,
+-                                "tcp", SOCK_NONBLOCK, addrbuf, sizeof(addrbuf));
++                                "tcp", 1, false,
++                                addrbuf, sizeof(addrbuf));
+     device->gpsdata.gps_fd = dsock;
+     // nonblocking means we have the fd, but the connection is not
+     // finished yet.  Connection may fail, later.
+diff --git a/include/gpsd.h b/include/gpsd.h
+index 0f6b731eb..2f3260c1e 100644
+--- a/include/gpsd.h
++++ b/include/gpsd.h
+@@ -1002,7 +1002,7 @@ extern void gpsd_clear_data(struct gps_device_t *);
+ extern socket_t netlib_connectsock(int, const char *, const char *,
+                                    const char *);
+ extern socket_t netlib_connectsock1(int, const char *, const char *,
+-                                    const char *, int,
++                                    const char *, int, bool,
+                                     char *, size_t);
+ // end FIXME
+ extern socket_t netlib_localsocket(const char *, int);
+diff --git a/libgps/netlib.c b/libgps/netlib.c
+index e4e763025..5f553fe10 100644
+--- a/libgps/netlib.c
++++ b/libgps/netlib.c
+@@ -55,8 +55,10 @@
+  * host - host to connect to
+  * service -- aka port
+  * protocol
+- * flags -- can be SOCK_NONBLOCK for non-blocking connect
+- *          Note: macOS does not have SOCK_NONBLOCK
++ * nonblock -- 1 sets the socket as non-blocking before connect() if
++ *             SOCK_NONBLOCK is supported,
++ *             >1 sets the socket as non-blocking after connect()
++ * bind_me -- call bind() on the socket instead of connect()
+  * addrbuf -- 50 char buf to put string of IP address conencting
+  *            INET6_ADDRSTRLEN
+  * addrbuf_sz -- sizeof(adddrbuf)
+@@ -70,16 +72,15 @@
+  *        less than zero on error (NL_*)
+  */
+ socket_t netlib_connectsock1(int af, const char *host, const char *service,
+-                             const char *protocol, int flags,
++                             const char *protocol, int nonblock, bool bind_me,
+                              char *addrbuf, size_t addrbuf_sz)
+ {
+     struct protoent *ppe;
+     struct addrinfo hints;
+     struct addrinfo *result = NULL;
+     struct addrinfo *rp;
+-    int ret, type, proto, one;
++    int ret, flags, type, proto, one;
+     socket_t s;
+-    bool bind_me;
+ 
+     if (NULL != addrbuf) {
+         addrbuf[0] = '\0';
+@@ -97,9 +98,6 @@ socket_t netlib_connectsock1(int af, const char *host, const char *service,
+         return NL_NOPROTO;
+     }
+ 
+-    /* we probably ought to pass this in as an explicit flag argument */
+-    bind_me = (SOCK_DGRAM == type);
+-
+     memset(&hints, 0, sizeof(struct addrinfo));
+     hints.ai_family = af;
+     hints.ai_socktype = type;
+@@ -107,6 +105,15 @@ socket_t netlib_connectsock1(int af, const char *host, const char *service,
+     if (bind_me) {
+         hints.ai_flags = AI_PASSIVE;
+     }
++#if defined(SOCK_NONBLOCK)
++    flags = nonblock == 1 ? SOCK_NONBLOCK : 0;
++#else
++    // macOS has no SOCK_NONBLOCK
++    flags = 0;
++    if (nonblock == 1)
++        nonblock = 2;
++#endif
++
+     // FIXME: need a way to bypass these DNS calls if host is an IP.
+     if ((ret = getaddrinfo(host, service, &hints, &result))) {
+         // result is unchanged on error, so we need to have set it to NULL
+@@ -219,13 +226,15 @@ socket_t netlib_connectsock1(int af, const char *host, const char *service,
+                          sizeof(one));
+     }
+ 
+-    // set socket to noblocking
++    if (nonblock > 1) {
++        // set socket to noblocking
+ #ifdef HAVE_FCNTL
+-    (void)fcntl(s, F_SETFL, fcntl(s, F_GETFL) | O_NONBLOCK);
++        (void)fcntl(s, F_SETFL, fcntl(s, F_GETFL) | O_NONBLOCK);
+ #elif defined(HAVE_WINSOCK2_H)
+-    u_long one1 = 1;
+-    (void)ioctlsocket(s, FIONBIO, &one1);
++        u_long one1 = 1;
++        (void)ioctlsocket(s, FIONBIO, &one1);
+ #endif
++    }
+     return s;
+ }
+ 
+@@ -235,7 +244,7 @@ socket_t netlib_connectsock1(int af, const char *host, const char *service,
+ socket_t netlib_connectsock(int af, const char *host, const char *service,
+                             const char *protocol)
+ {
+-    return netlib_connectsock1(af, host, service, protocol, 0, NULL, 0);
++    return netlib_connectsock1(af, host, service, protocol, 2, false, NULL, 0);
+ }
+ 
+ //  Convert NL_* error code to a string
+
+commit fd6682a6ffd0a5d4d640839422274b582ba38e72
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Jul 25 11:08:19 2023 +0200
+
+    clients/gps2udp.c: Switch to netlib_connectsock1().
+    
+    Use netlib_connectsock1() to avoid using obsolete gethostbyname() and
+    support IPv6.
+
+diff --git a/clients/gps2udp.c b/clients/gps2udp.c
+index 2d9c6033d..541054d8f 100644
+--- a/clients/gps2udp.c
++++ b/clients/gps2udp.c
+@@ -21,7 +21,6 @@
+ #ifdef HAVE_GETOPT_LONG
+        #include <getopt.h>   // for getopt_long()
+ #endif
+-#include <netdb.h>        /* for gethostbyname() */
+ #include <netinet/in.h>
+ #include <stdbool.h>
+ #include <stdio.h>
+@@ -50,7 +49,6 @@ static struct gps_data_t gpsdata;
+ 
+ /* UDP socket variables */
+ #define MAX_UDP_DEST 5
+-static struct sockaddr_in remote[MAX_UDP_DEST];
+ static int sock[MAX_UDP_DEST];
+ static int udpchannel;
+ 
+@@ -128,12 +126,10 @@ static int send_udp(char *nmeastring, size_t ind)
+ 
+     // send message on udp channel
+     for (channel=0; channel < udpchannel; channel ++) {
+-        ssize_t status = sendto(sock[channel],
+-                                buffer,
+-                                ind,
+-                                0,
+-                                (struct sockaddr *)&remote[channel],
+-                                (int)sizeof(remote));
++        ssize_t status = send(sock[channel],
++                              buffer,
++                              ind,
++                              0);
+         if (status < (ssize_t)ind) {
+             (void)fprintf(stderr, "gps2udp: failed to send [%s] \n",
+                           buffer);
+@@ -152,9 +148,6 @@ static int open_udp(char **hostport)
+    for (channel = 0; channel < udpchannel; channel++) {
+        char *hostname = NULL;
+        char *portname = NULL;
+-       char *endptr = NULL;
+-       int  portnum;
+-       struct hostent *hp;
+ 
+        if (NULL == hostport[channel]) {
+            // pacify coverity
+@@ -171,32 +164,13 @@ static int open_udp(char **hostport)
+            return -1;
+        }
+ 
+-       errno = 0;
+-       portnum = (int)strtol(portname, &endptr, 10);
+-       if (1 > portnum || 65535 < portnum || '\0' != *endptr || 0 != errno) {
+-           (void)fprintf(stderr, "gps2udp: syntax is [-u hostname:port] "
+-                         "[%s] is not a valid port number\n", portname);
+-           return -1;
+-       }
+-
+-       sock[channel]= socket(AF_INET, SOCK_DGRAM, 0);
++       sock[channel] = netlib_connectsock1(AF_UNSPEC, hostname, portname, "udp",
++                                           0, false, NULL, 0);
+        if (0 > sock[channel]) {
+-           (void)fprintf(stderr, "gps2udp: error creating UDP socket\n");
++           (void)fprintf(stderr, "gps2udp: error creating UDP socket: %s\n",
++                         netlib_errstr(sock[channel]));
+            return -1;
+        }
+-
+-       remote[channel].sin_family = (sa_family_t)AF_INET;
+-       hp = gethostbyname(hostname);
+-       if (NULL == hp) {
+-           (void)fprintf(stderr,
+-                         "gps2udp: syntax is [-u hostname:port] [%s]"
+-                         " is not a valid hostname\n",
+-                         hostname);
+-           return -1;
+-       }
+-
+-       memcpy( &remote[channel].sin_addr, hp->h_addr_list[0], hp->h_length);
+-       remote[channel].sin_port = htons((in_port_t)portnum);
+     }
+     return 0;
+ }
+
+commit 749be8acce27f16d74ba727f4819f3e49602882a
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Jul 25 11:10:39 2023 +0200
+
+    clients/lcdgps.c: Switch to netlib_connectsock1().
+    
+    Use netlib_connectsock1() to avoid using obsolete gethostbyname() and
+    support IPv6.
+
+diff --git a/clients/lcdgps.c b/clients/lcdgps.c
+index 7d0ee6bc8..b311882b0 100644
+--- a/clients/lcdgps.c
++++ b/clients/lcdgps.c
+@@ -21,11 +21,12 @@
+ */
+ 
+ #define LCDDHOST "localhost"
+-#define LCDDPORT 13666
++#define LCDDPORT "13666"
+ 
+ #define CLIMB 3
+ 
+ #include "../include/gpsd_config.h"  /* must be before all includes */
++#include "../include/gpsd.h"
+ 
+ #include <arpa/inet.h>
+ #include <errno.h>
+@@ -33,7 +34,6 @@
+        #include <getopt.h>   // for getopt_long()
+ #endif
+ #include <math.h>
+-#include <netdb.h>        /* for gethostbyname() */
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -259,9 +259,6 @@ static void usage( char *prog)
+ 
+ int main(int argc, char *argv[])
+ {
+-    int rc;
+-    struct sockaddr_in localAddr, servAddr;
+-    struct hostent *h;
+     const char *optstring = "?hl:su:V";
+     int n;
+ #ifdef HAVE_GETOPT_LONG
+@@ -390,41 +387,10 @@ int main(int argc, char *argv[])
+     }
+ 
+     /* Connect to LCDd */
+-    h = gethostbyname(LCDDHOST);
+-    if (h==NULL) {
+-        printf("%s: unknown host '%s'\n",argv[0],LCDDHOST);
+-        exit(EXIT_FAILURE);
+-    }
+-
+-    servAddr.sin_family = h->h_addrtype;
+-    memcpy((char *) &servAddr.sin_addr.s_addr, h->h_addr_list[0], h->h_length);
+-    servAddr.sin_port = htons(LCDDPORT);
+-
+-    /* create socket */
+-    sd = socket(AF_INET, SOCK_STREAM, 0);
+-    if (BAD_SOCKET(sd)) {
+-        perror("cannot open socket ");
+-        exit(EXIT_FAILURE);
+-    }
+-
+-    /* bind any port number */
+-    localAddr.sin_family = AF_INET;
+-    localAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+-    localAddr.sin_port = htons(0);
+-
+-    /* coverity[uninit_use_in_call] */
+-    rc = bind(sd, (struct sockaddr *) &localAddr, sizeof(localAddr));
+-    if (rc == -1) {
+-        printf("%s: cannot bind port TCP %d\n",argv[0],LCDDPORT);
+-        perror("error ");
+-        exit(EXIT_FAILURE);
+-    }
++    sd = netlib_connectsock1(AF_UNSPEC, LCDDHOST, LCDDPORT, "tcp", 0, false, NULL, 0);
++    if (0 > sd) {
+ 
+-    /* connect to server */
+-    /* coverity[uninit_use_in_call] */
+-    rc = connect(sd, (struct sockaddr *) &servAddr, sizeof(servAddr));
+-    if (rc == -1) {
+-        perror("cannot connect ");
++        (void)fprintf(stderr, "lcdgps: cannot connect: %s\n", netlib_errstr(sd));
+         exit(EXIT_FAILURE);
+     }
+ 
