@@ -5,7 +5,7 @@
 
 Name:           gpsd-minimal
 Version:        3.25
-Release:        1%{?dist}.3
+Release:        4%{?dist}
 Epoch:          1
 Summary:        Service daemon for mediating access to a GPS
 
@@ -219,13 +219,13 @@ rm -rf %{buildroot}%{_docdir}/gpsd
 %{_mandir}/man1/zerk.1*
 
 %changelog
-* Tue Aug 08 2023 Miroslav Lichvar <mlichvar@redhat.com> - 1:3.25-1.el9_3.3
+* Tue Aug 08 2023 Miroslav Lichvar <mlichvar@redhat.com> - 1:3.25-4
 - fix busy wait when reading from gpsd socket
 
-* Tue Aug 08 2023 Miroslav Lichvar <mlichvar@redhat.com> - 1:3.25-1.el9_2.2
+* Tue Aug 08 2023 Miroslav Lichvar <mlichvar@redhat.com> - 1:3.25-3
 - fix gpsfake to load python gps module
 
-* Tue Aug 01 2023 Miroslav Lichvar <mlichvar@redhat.com> - 1:3.25-1.el9_2.1
+* Tue Aug 01 2023 Miroslav Lichvar <mlichvar@redhat.com> - 1:3.25-2
 - add missing IPv6 support
 - fix some issues reported by coverity and shellcheck
 
